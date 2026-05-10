@@ -33,9 +33,9 @@ pipeline {
         WORKSPACE_DIR = "${WORKSPACE}"
         VALIDATION_DIR = "${WORKSPACE}/bob-validation"
         
-        // Git configuration
-        GIT_BRANCH = "${env.CHANGE_BRANCH ?: env.GIT_BRANCH}"
-        BASE_BRANCH = "${env.CHANGE_TARGET ?: 'main'}"
+        // Git configuration - supports any branch
+        GIT_BRANCH = "${env.CHANGE_BRANCH ?: env.GIT_BRANCH ?: env.BRANCH_NAME ?: 'main'}"
+        BASE_BRANCH = "${env.CHANGE_TARGET ?: params.BASE_BRANCH ?: 'main'}"
         
         // IBM specific settings
         IBM_CONTRIBUTOR_EMAIL = "${env.CHANGE_AUTHOR_EMAIL ?: 'karthikeyan.balakrishnan1@ibm.com'}"
@@ -52,6 +52,11 @@ pipeline {
             defaultValue: 'IBM/c2c',
             description: 'Public/external repository (format: org/repo)'
         )
+        string(
+            name: 'BASE_BRANCH',
+            defaultValue: 'main',
+            description: 'Base branch to compare against (e.g., main, develop, master)'
+        )
         booleanParam(
             name: 'SKIP_VALIDATION',
             defaultValue: false,
@@ -67,6 +72,11 @@ pipeline {
             defaultValue: false,
             description: 'Enable debug output'
         )
+    }
+    
+    triggers {
+        // Trigger on any branch push or PR
+        githubPush()
     }
     
     options {
