@@ -8,6 +8,11 @@ pipeline {
         // GitHub credentials for public repo
         GITHUB_TOKEN = credentials('github-token')
         
+        // Bob Shell API Key (required for authentication)
+        // Create this credential in Jenkins: Manage Jenkins → Credentials → Add Credentials
+        // Kind: Secret text, ID: bob-api-key
+        BOB_API_KEY = credentials('bob-api-key')
+        
         // IBM Fork repository (where validation happens)
         IBM_FORK_REPO = "${params.IBM_FORK_REPO ?: 'karthikeyan-balakrishnan-ibm/c2c'}"
         
@@ -470,9 +475,18 @@ Be EXTRA strict because this is going to a public repository."""
         bob_path = os.getenv('BOB_SHELL_PATH', 'bob')
         node_path = os.getenv('NODE_PATH', 'node')
         bob_js_path = os.getenv('BOB_JS_PATH', '')
+        bob_api_key = os.getenv('BOB_API_KEY', '')
         
         print(f"Using Node.js at: {node_path}")
         print(f"Using Bob Shell at: {bob_path}")
+        print(f"API Key configured: {'Yes' if bob_api_key else 'No'}")
+        
+        # Prepare environment with API key
+        bob_env = {
+            **os.environ,
+            'PATH': f"/opt/homebrew/bin:{os.environ.get('PATH', '')}",
+            'API_KEY': bob_api_key  # Bob Shell expects API_KEY environment variable
+        }
         
         # Bob is a Node.js script, so we can call it directly or via node
         # Try direct execution first (if bob is executable and in PATH)
@@ -490,7 +504,7 @@ Be EXTRA strict because this is going to a public repository."""
                 capture_output=True,
                 text=True,
                 timeout=120,
-                env={**os.environ, 'PATH': f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"}
+                env=bob_env
             )
             
             if result.returncode != 0 and 'node' in result.stderr.lower():
@@ -511,7 +525,8 @@ Be EXTRA strict because this is going to a public repository."""
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=120
+                    timeout=120,
+                    env=bob_env
                 )
             else:
                 # Fallback: try with just 'bob' in PATH
@@ -523,6 +538,10 @@ Be EXTRA strict because this is going to a public repository."""
                         prompt
                     ],
                     capture_output=True,
+                    text=True,
+                    timeout=120,
+                    env=bob_env
+                )
                     text=True,
                     timeout=120,
                     env={**os.environ, 'PATH': f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"}
