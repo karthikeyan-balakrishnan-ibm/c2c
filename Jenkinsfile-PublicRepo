@@ -551,16 +551,22 @@ Be EXTRA strict because this is going to a public repository."""
         
         if result.returncode == 0:
             # Parse Bob Shell response
+            output = result.stdout
+            
+            # Extract JSON from output markers
+            if '---output---' in output:
+                json_start = output.find('---output---') + len('---output---')
+                json_str = output[json_start:].strip()
+            else:
+                json_str = output.strip()
+            
+            # Try to parse JSON - handle extra data after JSON
+            import re
             try:
-                # Bob Shell wraps JSON in ---output--- markers
-                output = result.stdout
-                
-                # Extract JSON from output markers
-                if '---output---' in output:
-                    json_start = output.find('---output---') + len('---output---')
-                    json_str = output[json_start:].strip()
-                else:
-                    json_str = output.strip()
+                # First, try to extract just the JSON object
+                json_match = re.search(r'\\{(?:[^{}]|\\{[^{}]*\\})*\\}', json_str, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group()
                 
                 # Parse JSON
                 bob_response = json.loads(json_str)
@@ -571,21 +577,27 @@ Be EXTRA strict because this is going to a public repository."""
                 
                 return bob_response
                 
-            except json.JSONDecodeError as e:
-                print(f"⚠️  Failed to parse Bob response as JSON: {e}")
-                # Try to extract JSON from text
-                import re
-                json_match = re.search(r'\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}', result.stdout, re.DOTALL)
-                if json_match:
-                    try:
-                        bob_response = json.loads(json_match.group())
-                        bob_response['validation_type'] = 'public_repo'
-                        bob_response['target_repo'] = pr_content.get('metadata', {}).get('public_repo', 'Unknown')
-                        return bob_response
-                    except:
-                        pass
+            except (json.JSONDecodeError, AttributeError) as e:
+                # Silently try alternative parsing methods
+                # Try to find JSON in the output using more aggressive regex
+                json_patterns = [
+                    r'\\{[\\s\\S]*?\\}(?=\\s*$)',  # JSON at end
+                    r'\\{[\\s\\S]*?\\}(?=\\s*---)',  # JSON before markers
+                    r'\\{[\\s\\S]*?\\}'  # Any JSON
+                ]
                 
-                # Last resort: return error
+                for pattern in json_patterns:
+                    try:
+                        match = re.search(pattern, output)
+                        if match:
+                            bob_response = json.loads(match.group())
+                            bob_response['validation_type'] = 'public_repo'
+                            bob_response['target_repo'] = pr_content.get('metadata', {}).get('public_repo', 'Unknown')
+                            return bob_response
+                    except:
+                        continue
+                
+                # If all parsing fails, return error
                 return {
                     "approved": False,
                     "confidence": "LOW",
