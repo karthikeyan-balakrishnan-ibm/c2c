@@ -477,33 +477,22 @@ Be EXTRA strict because this is going to a public repository."""
         bob_js_path = os.getenv('BOB_JS_PATH', '')
         bob_api_key = os.getenv('BOB_API_KEY', '')
         
-        print(f"Using Node.js at: {node_path}")
-        print(f"Using Bob Shell at: {bob_path}")
-        print(f"API Key configured: {'Yes' if bob_api_key else 'No'}")
-        if bob_api_key:
-            print(f"API Key length: {len(bob_api_key)}")
-            print(f"API Key starts with: {bob_api_key[:10]}..." if len(bob_api_key) > 10 else "API Key too short")
-        else:
-            print("⚠️  WARNING: BOB_API_KEY environment variable is empty!")
-            print("Available environment variables:")
-            for key in sorted(os.environ.keys()):
-                if 'BOB' in key.upper() or 'API' in key.upper():
-                    print(f"  - {key}: {'<set>' if os.environ[key] else '<empty>'}")
+        if not bob_api_key:
+            print("❌ ERROR: BOB_API_KEY environment variable is not set!")
+            return {
+                "approved": False,
+                "confidence": "LOW",
+                "error": "Bob Shell API key not configured in Jenkins"
+            }
         
         # Prepare environment with API key
-        # Bob Shell might expect API_KEY, BOBSHELL_API_KEY, or read from config
         bob_env = {
             **os.environ,
             'PATH': f"/opt/homebrew/bin:{os.environ.get('PATH', '')}",
-            'API_KEY': bob_api_key,  # Standard API_KEY
-            'BOBSHELL_API_KEY': bob_api_key,  # Alternative name
-            'BOB_API_KEY': bob_api_key  # Keep original name too
+            'API_KEY': bob_api_key,
+            'BOBSHELL_API_KEY': bob_api_key,
+            'BOB_API_KEY': bob_api_key
         }
-        
-        print(f"Environment variables being passed to Bob:")
-        print(f"  - API_KEY: {'<set>' if bob_env.get('API_KEY') else '<not set>'}")
-        print(f"  - BOBSHELL_API_KEY: {'<set>' if bob_env.get('BOBSHELL_API_KEY') else '<not set>'}")
-        print(f"  - BOB_API_KEY: {'<set>' if bob_env.get('BOB_API_KEY') else '<not set>'}")
         
         # Bob is a Node.js script, so we can call it directly or via node
         # Try direct execution first (if bob is executable and in PATH)
@@ -560,43 +549,55 @@ Be EXTRA strict because this is going to a public repository."""
                     env=bob_env
                 )
         
-        print(f"Bob Shell exit code: {result.returncode}")
-        
         if result.returncode == 0:
-            # Try to parse JSON response
+            # Parse Bob Shell response
             try:
-                bob_response = json.loads(result.stdout)
+                # Bob Shell wraps JSON in ---output--- markers
+                output = result.stdout
+                
+                # Extract JSON from output markers
+                if '---output---' in output:
+                    json_start = output.find('---output---') + len('---output---')
+                    json_str = output[json_start:].strip()
+                else:
+                    json_str = output.strip()
+                
+                # Parse JSON
+                bob_response = json.loads(json_str)
                 
                 # Add metadata
                 bob_response['validation_type'] = 'public_repo'
                 bob_response['target_repo'] = pr_content.get('metadata', {}).get('public_repo', 'Unknown')
                 
                 return bob_response
-            except json.JSONDecodeError:
-                print("⚠️  Bob response is not valid JSON, parsing text...")
+                
+            except json.JSONDecodeError as e:
+                print(f"⚠️  Failed to parse Bob response as JSON: {e}")
+                # Try to extract JSON from text
                 import re
-                json_match = re.search(r'\\{[\\s\\S]*\\}', result.stdout)
+                json_match = re.search(r'\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}', result.stdout, re.DOTALL)
                 if json_match:
                     try:
-                        return json.loads(json_match.group())
+                        bob_response = json.loads(json_match.group())
+                        bob_response['validation_type'] = 'public_repo'
+                        bob_response['target_repo'] = pr_content.get('metadata', {}).get('public_repo', 'Unknown')
+                        return bob_response
                     except:
                         pass
                 
-                # Fallback
-                approved = "approved" in result.stdout.lower() and "true" in result.stdout.lower()
+                # Last resort: return error
                 return {
-                    "approved": approved,
+                    "approved": False,
                     "confidence": "LOW",
-                    "raw_response": result.stdout,
-                    "note": "Response parsed from text output"
+                    "error": "Failed to parse Bob Shell response",
+                    "raw_output": result.stdout[:500]  # First 500 chars only
                 }
         else:
-            print(f"❌ Bob Shell error: {result.stderr}")
             return {
                 "approved": False,
                 "confidence": "LOW",
-                "error": result.stderr,
-                "stdout": result.stdout
+                "error": f"Bob Shell exited with code {result.returncode}",
+                "stderr": result.stderr[:500] if result.stderr else "No error output"
             }
     
     except subprocess.TimeoutExpired:
@@ -623,10 +624,57 @@ Be EXTRA strict because this is going to a public repository."""
             "error": str(e)
         }
 
+def format_validation_result(result):
+    """Format validation result for human-readable output"""
+    output = []
+    output.append("\\n" + "="*70)
+    output.append("🤖 BOB VALIDATION RESULT - PUBLIC REPOSITORY SUBMISSION")
+    output.append("="*70)
+    
+    # Status
+    approved = result.get("approved", False)
+    confidence = result.get("confidence", "UNKNOWN")
+    status_icon = "✅" if approved else "❌"
+    
+    output.append(f"\\n{status_icon} STATUS: {'APPROVED' if approved else 'REJECTED'}")
+    output.append(f"📊 CONFIDENCE: {confidence}")
+    output.append(f"🎯 TARGET: {result.get('target_repo', 'Unknown')}")
+    
+    # Issues
+    issues = result.get("issues", [])
+    if issues:
+        output.append(f"\\n⚠️  ISSUES FOUND: {len(issues)}")
+        output.append("-" * 70)
+        for i, issue in enumerate(issues, 1):
+            output.append(f"\\n{i}. {issue.get('type', 'Unknown').upper().replace('_', ' ')}")
+            output.append(f"   Severity: {issue.get('severity', 'UNKNOWN')}")
+            output.append(f"   Location: {issue.get('location', 'Not specified')}")
+            output.append(f"   Message: {issue.get('message', 'No message')}")
+            if issue.get('suggestion'):
+                output.append(f"   💡 Suggestion: {issue.get('suggestion')}")
+    else:
+        output.append("\\n✅ NO ISSUES FOUND")
+    
+    # Recommendations
+    recommendations = result.get("recommendations", [])
+    if recommendations:
+        output.append(f"\\n💡 RECOMMENDATIONS:")
+        output.append("-" * 70)
+        for i, rec in enumerate(recommendations, 1):
+            output.append(f"{i}. {rec}")
+    
+    # Error handling
+    if result.get("error"):
+        output.append(f"\\n❌ ERROR: {result.get('error')}")
+    
+    output.append("\\n" + "="*70)
+    
+    return "\\n".join(output)
+
 if __name__ == "__main__":
     pr_content_file = sys.argv[1] if len(sys.argv) > 1 else "pr_content.json"
     
-    print(f"📄 Validating for public repository: {pr_content_file}")
+    print(f"\\n🔍 Validating PR content for public repository submission...")
     
     result = validate_with_bob(pr_content_file)
     
@@ -634,11 +682,8 @@ if __name__ == "__main__":
     with open("bob_validation_result.json", 'w') as f:
         json.dump(result, f, indent=2)
     
-    print("\\n" + "="*60)
-    print("BOB VALIDATION RESULT (PUBLIC REPO)")
-    print("="*60)
-    print(json.dumps(result, indent=2))
-    print("="*60)
+    # Display formatted result
+    print(format_validation_result(result))
     
     # Exit with appropriate code
     sys.exit(0 if result.get("approved", False) else 1)
