@@ -15,7 +15,7 @@ pipeline {
         PUBLIC_REPO = "${params.PUBLIC_REPO ?: 'IBM/c2c'}"
         
         // Bob Shell configuration
-        BOB_SHELL_PATH = '/usr/local/bin/bob'
+        BOB_SHELL_PATH = '/opt/homebrew/bin/bob'
         
         // Working directories
         WORKSPACE_DIR = "${WORKSPACE}"
@@ -92,6 +92,43 @@ pipeline {
                         mkdir -p ${VALIDATION_DIR}
                         echo "✅ Validation directory created: ${VALIDATION_DIR}"
                     """
+                }
+            }
+        }
+        
+        stage('Verify Bob Shell') {
+            steps {
+                script {
+                    echo "🔍 Verifying Bob Shell availability..."
+                    echo "   Bob Shell Path: ${BOB_SHELL_PATH}"
+                    
+                    def bobCheck = sh(
+                        script: """
+                            if [ -f "${BOB_SHELL_PATH}" ]; then
+                                echo "✅ Bob Shell found at: ${BOB_SHELL_PATH}"
+                                ${BOB_SHELL_PATH} --help | head -5 || echo "Bob exists but --help failed"
+                                exit 0
+                            else
+                                echo "❌ Bob Shell not found at: ${BOB_SHELL_PATH}"
+                                echo ""
+                                echo "Searching for Bob in common locations..."
+                                which bob || echo "  - Not in PATH"
+                                ls -la /usr/local/bin/bob 2>/dev/null || echo "  - Not in /usr/local/bin"
+                                ls -la /opt/ibm/bob/bin/bob 2>/dev/null || echo "  - Not in /opt/ibm"
+                                ls -la ~/.local/bin/bob 2>/dev/null || echo "  - Not in ~/.local/bin"
+                                echo ""
+                                echo "Please update BOB_SHELL_PATH in Jenkinsfile environment section"
+                                exit 1
+                            fi
+                        """,
+                        returnStatus: true
+                    )
+                    
+                    if (bobCheck != 0) {
+                        error("❌ Bob Shell verification failed. Please check the path and ensure Bob is installed.")
+                    }
+                    
+                    echo "✅ Bob Shell verified successfully"
                 }
             }
         }
@@ -368,10 +405,14 @@ Be EXTRA strict because this is going to a public repository."""
     print(f"Prompt length: {len(prompt)} characters")
     
     try:
+        # Get Bob Shell path from environment, fallback to 'bob' in PATH
+        bob_path = os.getenv('BOB_SHELL_PATH', 'bob')
+        print(f"Using Bob Shell at: {bob_path}")
+        
         # Call Bob Shell with positional prompt
         result = subprocess.run(
             [
-                'bob',
+                bob_path,
                 '--output-format', 'json',
                 '--chat-mode', 'code',
                 prompt
@@ -475,10 +516,13 @@ if __name__ == "__main__":
                         returnStatus: true
                     )
                     
-                    // Read validation results
+                    // Read validation results using native Groovy JSON parsing
                     def resultsFile = "${VALIDATION_DIR}/bob_validation_result.json"
                     if (fileExists(resultsFile)) {
-                        def results = readJSON file: resultsFile
+                        // Read file content and parse JSON manually
+                        def jsonContent = readFile(resultsFile)
+                        def jsonSlurper = new groovy.json.JsonSlurper()
+                        def results = jsonSlurper.parseText(jsonContent)
                         
                         // Store results in environment
                         env.BOB_APPROVED = results.approved.toString()
@@ -858,5 +902,3 @@ def generateHTMLReportForPublicRepo(results, prContent) {
 </body>
 </html>"""
 }
-// Go to hell
-// This process is waste of time
